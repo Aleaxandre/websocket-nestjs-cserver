@@ -20,6 +20,11 @@ interface ChatMessage {
 interface IdentityMessage {
   username: string;
 }
+
+interface ChatClient {
+  username: string;
+}
+
 type SocketClient = {
   username: string;
   socket?: Socket;
@@ -44,28 +49,75 @@ export class EventsGateway {
 
   @SubscribeMessage('identify')
   async identify(
-    @MessageBody() data: IdentityMessage,
+    @MessageBody() username: string,
     @ConnectedSocket() socket: Socket,
   ): Promise<IdentityMessage> {
-    console.log('User identified : ', data.username);
-    this.clients.push({ username: data.username, socket });
-    return { username: data.username };
+    console.log('User identified : ', username);
+
+    // Register Client in clients list
+    this.clients.push({ username: username, socket });
+
+    const currentDate = new Date();
+    this.broadcastMessage(
+      {
+        author: 'Server',
+        text: `User "${username}" has arrived.`,
+        date: currentDate,
+      },
+      [username],
+    );
+
+    return { username, date: currentDate } as IdentityMessage;
+  }
+
+  findClientBySocketId(socketId: string) {
+    const currentClient = this.clients.find(
+      (client: SocketClient) => client.socket.id === socketId,
+    );
+    if (!!currentClient) {
+      return currentClient;
+    } else {
+      throw new Error(`Client not found for socker ID: ${socketId}`);
+    }
+  }
+
+  @SubscribeMessage('list-clients')
+  async listClients(
+    @MessageBody() filter: string,
+    @ConnectedSocket() socket,
+  ): Promise<ChatClient[]> {
+    console.log(
+      `Client ${socket.id} asked for clients list with filter=${filter}`,
+    );
+
+    return this.clients.map((client: SocketClient) => {
+      return { username: client.username };
+    });
   }
 
   @SubscribeMessage('message')
-  async message(@MessageBody() data: ChatMessage): Promise<ChatMessage> {
+  async message(@MessageBody() data: ChatMessage): Promise<void> {
     console.log('Message received : ', data);
-    //broadcast the message to all the clients
+
+    // Broadcast the message to all the clients except the sender
+    this.broadcastMessage(data, [data.author]);
+  }
+
+  // Sends a broadcast message to all clients
+  // To exclude clients, add their usernames to excludeClients
+  private broadcastMessage(data: ChatMessage, excludeClients: string[] = []) {
     this.clients
-      .filter(client => data.author !== client.username)
+      .filter(client => !this.isExcludedClient(excludeClients, client))
       .forEach(function(client) {
         client.socket?.emit('message', data);
       });
-    return {
-      author: 'Server',
-      text: `Merci pour ton "${data.text}", ${data.author}.`,
-      date: new Date(),
-    };
+  }
+
+  private isExcludedClient(excludeClients: string[], client: SocketClient) {
+    return excludeClients.some(
+      (excludedClientUsername: string) =>
+        excludedClientUsername === client.username,
+    );
   }
 
   afterInit(server: Server) {
